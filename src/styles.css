@@ -45,6 +45,8 @@ select, input:not([type]), input[type="text"] { background: var(--raised); borde
 
 .drop { border: 1.5px dashed var(--line); background: var(--panel); border-radius: var(--radius-panel); padding: 56px var(--space-l); display: flex; flex-direction: column; gap: var(--space-s); align-items: center; text-align: center; }
 .drop strong { font-size: 18px; }
+.drop { min-height: 320px; justify-content: center; }
+.drop-icon { font-size: 28px; width: 56px; height: 56px; border-radius: 28px; display: grid; place-items: center; background: var(--raised); color: var(--accent); margin-bottom: var(--space-s); }
 .versions { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-s); }
 .version { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 

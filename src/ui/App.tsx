@@ -403,14 +403,6 @@ export function App() {
       {error && <div className="banner bad" role="alert">{error}</div>}
       {notice && <div className="banner" role="status">{notice}</div>}
 
-      {!source && !pending && (
-        <button className="drop" onClick={() => fileInput.current?.click()} disabled={opening}>
-          <strong>{opening ? "Opening…" : "Open a song"}</strong>
-          <span>Drop a WAV, AIFF, FLAC, MP3, M4A or Ogg file, or a SoundLab project (.soundlab).</span>
-          <span className="muted">Files are read at their own sample rate and bit depth.</span>
-        </button>
-      )}
-
       {pending && !source && (
         <section className="panel">
           <h2 className="label">Choose a version from {pending.project.title}</h2>
@@ -425,8 +417,16 @@ export function App() {
         </section>
       )}
 
-      {source && (
+      {(source || !pending) && (
         <div className="workspace">
+          {!source ? (
+            <button className="drop" onClick={() => fileInput.current?.click()} disabled={opening}>
+              <span className="drop-icon" aria-hidden>＋</span>
+              <strong>{opening ? "Opening…" : "Open a song"}</strong>
+              <span>Drop a WAV, AIFF, FLAC, MP3, M4A or Ogg file, or a SoundLab project (.soundlab).</span>
+              <span className="muted">Files are read at their own sample rate and bit depth. Then play it, choose a part if you like, and split.</span>
+            </button>
+          ) : (
           <section className="panel timeline">
             <div className="row between wrap">
               <div className="source-meta">
@@ -478,6 +478,7 @@ export function App() {
               <p className="muted small">Space plays. Drag across the mix to split only that part, for a quick check before the whole song.</p>
             )}
           </section>
+          )}
 
           <aside className="side">
             {!result && (
@@ -530,15 +531,18 @@ export function App() {
                         <span>Make the stems add up exactly to the mix<br /><span className="muted small">Shares what the model missed among the stems. Nulls perfectly, but adds a little bleed.</span></span>
                       </label>
                     </details>
-                    <div className="selection-info">
+                    {source && <div className="selection-info">
                       {selection ? (
                         <><span>Selection <strong>{time(selection.start)}–{time(selection.end)}</strong> <span className="muted">({time(selection.end - selection.start)})</span></span>
                           <button className="ghost small-btn" onClick={() => setSelection(null)} disabled={!!job}>Whole song</button></>
                       ) : <span className="muted small">Whole song · drag across the mix to split a part</span>}
-                    </div>
+                    </div>}
                   </>
                 )}
-                {model && !job && (
+                {model && !source && (
+                  <button className="primary wide" onClick={() => fileInput.current?.click()} disabled={opening}>Open a song to split</button>
+                )}
+                {model && source && !job && (
                   <>
                     <button className="primary wide" onClick={split}>{selection ? "Split selection" : "Split whole song"}</button>
                     <span className="muted small">{runs} model runs{model.sampleRate !== source.audio.sampleRate ? ` · runs at ${khz(model.sampleRate)}; stems come back at ${khz(source.audio.sampleRate)}` : ""}{duration > 900 && !selection ? " · long files need a lot of memory" : ""}</span>
@@ -554,7 +558,7 @@ export function App() {
               </section>
             )}
 
-            {result && (
+            {result && source && (
               <section className="panel">
                 <h2 className="label">Export</h2>
                 <label className="field">Format
