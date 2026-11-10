@@ -16,7 +16,8 @@ import { decodeAudio, type OpenedAudio } from "./decode.ts";
 import { channelsName, dbToGain, dbtp, eta, khz, lufs, mb, time } from "./format.ts";
 import { loadModels, MODEL_BASE } from "./models.ts";
 import { Player } from "./player.ts";
-import { Waveform } from "./Waveform.tsx";
+import { Ruler, Waveform, type Selection } from "./Waveform.tsx";
+import type { Layout } from "../core/arrange.ts";
 
 type Origin =
   | { kind: "file" }
@@ -24,14 +25,23 @@ type Origin =
 type Source = { fileName: string; title: string; mime: string; bytes: Uint8Array; audio: OpenedAudio; loudness: Loudness | null; origin: Origin };
 type Job = { stage: Stage; done: number; total: number; backend?: string; separateStart?: number };
 type Result = {
-  stems: StemResult[]; residual: Float32Array[]; residualLoudness: Loudness; sumLoudness: Loudness;
-  nullDepthDb: number | null; backend: string; seconds: number; settings: StemSettings; model: ModelManifest;
+  stems: StemResult[]; residual: Float32Array[]; residualLoudness: Loudness; sumLoudness: Loudness; mixLoudness: Loudness;
+  nullDepthDb: number | null; backend: string; seconds: number; settings: StemSettings; model: ModelManifest; selection: Selection | null;
 };
+type StemCount = 2 | 4 | 6;
+const COUNTS: { n: StemCount; label: string; detail: string }[] = [
+  { n: 2, label: "2 stems", detail: "Vocals and instrumental" },
+  { n: 4, label: "4 stems", detail: "Vocals, drums, bass, other" },
+  { n: 6, label: "6 stems", detail: "Adds guitar and piano" },
+];
+// Models that can make a given number of stems (2 is made from a 4-stem model).
+const modelsFor = (all: ModelManifest[], n: StemCount) =>
+  all.filter((m) => (n === 6 ? m.sources.length >= 6 : m.sources.length === 4 && (n === 4 || m.sources.includes("vocals"))));
 type Strip = { mute: boolean; solo: boolean; db: number };
 type FormatChoice = "16" | "24" | "32f";
 
 const STEM_COLORS: Record<string, string> = {
-  vocals: "#C792EA", drums: "#FF9E64", bass: "#7DCFFF", guitar: "#9ECE6A", piano: "#E0AF68", other: "#A9B1D6", residual: "#8B93A1",
+  vocals: "#C792EA", instrumental: "#82AAFF", drums: "#FF9E64", bass: "#7DCFFF", guitar: "#9ECE6A", piano: "#E0AF68", other: "#A9B1D6", residual: "#8B93A1",
 };
 const stemColor = (id: string) => STEM_COLORS[id] ?? "#A9B1D6";
 const STAGES: Record<Stage, string> = {
@@ -65,6 +75,8 @@ export function App() {
   const [shifts, setShifts] = useState(1);
   const [overlap, setOverlap] = useState(0.25);
   const [sumToMix, setSumToMix] = useState(false);
+  const [count, setCount] = useState<StemCount>(() => ([2, 4, 6].includes(+remember("stemsplit.count")) ? (+remember("stemsplit.count") as StemCount) : 4));
+  const [selection, setSelection] = useState<Selection | null>(null);
 
   const [opening, setOpening] = useState(false);
   const [pending, setPending] = useState<{ project: Project; files: Map<string, Uint8Array>; fileName: string } | null>(null);
@@ -97,7 +109,12 @@ export function App() {
     });
     return () => { worker.current?.terminate(); player.current?.close(); };
   }, []);
-  const model = models?.find((m) => m.id === modelId);
+  const candidates = models ? modelsFor(models, count) : [];
+  useEffect(() => {
+    if (models && !candidates.some((m) => m.id === modelId)) setModelId(candidates[0]?.id ?? "");
+  }, [models, count]);
+  const model = candidates.find((m) => m.id === modelId);
+  const chooseCount = (n: StemCount) => { setCount(n); remember("stemsplit.count", String(n)); };
 
   // Playhead.
   useEffect(() => {
@@ -120,8 +137,14 @@ export function App() {
     const loudness = measureLoudness(audio.channels, audio.sampleRate);
     reset();
     setPending(null);
+    setSelection(null);
     setSource({ ...s, audio, loudness });
     setFormat(defaultFormat(audio));
+    // The mix can be played (and a part chosen) before splitting.
+    const p = (player.current ??= new Player());
+    p.onEnded = () => { setPlaying(false); setPos(0); };
+    p.setTracks([{ id: "mix", channels: audio.channels, sampleRate: audio.sampleRate }]);
+    p.setGain("mix", 1);
   }, []);
 
   const open = async (file: File) => {
@@ -158,12 +181,18 @@ export function App() {
 
   const split = () => {
     if (!source || !model) return;
+    const sel = selection;
     reset();
+    const rate = source.audio.sampleRate;
+    const range = sel ? { start: Math.round(sel.start * rate), end: Math.min(source.audio.channels[0].length, Math.round(sel.end * rate)) } : undefined;
+    const layout: Layout = count === 2 ? "vocals-instrumental" : "all";
     const settings: StemSettings = {
       model: { id: model.id, name: model.name, files: model.files.map((f) => f.sha256) },
       sources: model.sources, shifts, shiftOffsets: [], overlap, sumToMix,
       modelRate: model.sampleRate, fileRate: source.audio.sampleRate,
       output: { bitDepth: 24, encoding: "pcm" }, nullDepthDb: null,
+      ...(layout !== "all" ? { layout } : {}),
+      ...(range ? { range: { startSeconds: range.start / rate, endSeconds: range.end / rate } } : {}),
     };
     const w = new Worker(new URL("../engine/worker.ts", import.meta.url), { type: "module" });
     worker.current = w;
@@ -175,18 +204,20 @@ export function App() {
       } else if (m.type === "done") {
         w.terminate(); worker.current = null; setJob(null);
         setCached((c) => ({ ...c, [model.id]: model.files.reduce((n, f) => n + f.bytes, 0) }));
-        const r: Result = { ...m, settings: { ...settings, shiftOffsets: m.shiftOffsets, nullDepthDb: m.nullDepthDb }, model };
+        const r: Result = { ...m, settings: { ...settings, shiftOffsets: m.shiftOffsets, nullDepthDb: m.nullDepthDb, sources: m.stems.map((x) => x.source) }, model, selection: sel };
         setResult(r);
         const s: Record<string, Strip> = { residual: { mute: true, solo: false, db: 0 } };
         for (const st of m.stems) s[st.source] = { mute: false, solo: false, db: 0 };
         setStrips(s); setAb("stems");
         const p = (player.current ??= new Player());
         p.onEnded = () => { setPlaying(false); setPos(0); };
+        setPlaying(false); setPos(sel?.start ?? 0);
         p.setTracks([
           { id: "mix", channels: source.audio.channels, sampleRate: source.audio.sampleRate },
           ...m.stems.map((st) => ({ id: st.source, channels: st.channels, sampleRate: source.audio.sampleRate })),
           { id: "residual", channels: m.residual, sampleRate: source.audio.sampleRate },
         ]);
+        p.seek(sel?.start ?? 0);
       } else {
         w.terminate(); worker.current = null; setJob(null);
         if (!m.cancelled) setError(m.message); else setNotice("Separation cancelled.");
@@ -194,15 +225,16 @@ export function App() {
     };
     w.onerror = (e) => { w.terminate(); worker.current = null; setJob(null); setError(e.message || "The separation stopped unexpectedly. The device may have run out of memory."); };
     const channels = source.audio.channels.map((c) => c.slice()); // keep ours for playback
-    w.postMessage({ type: "separate", manifest: model, modelBase: MODEL_BASE, channels, sampleRate: source.audio.sampleRate, shifts, overlap, sumToMix }, channels.map((c) => c.buffer));
+    w.postMessage({ type: "separate", manifest: model, modelBase: MODEL_BASE, channels, sampleRate: rate, shifts, overlap, sumToMix, layout, range }, channels.map((c) => c.buffer));
   };
   const cancel = () => worker.current?.postMessage({ type: "cancel" });
 
   // Mixer gains: solo wins over mute; A/B swaps the stems for the level-matched mix.
-  const matchGain = useMemo(() => (result && source?.loudness ? gainToTarget(source.loudness.integratedLufs, result.sumLoudness.integratedLufs ?? -70) : 1), [result, source]);
+  const matchGain = useMemo(() => (result ? gainToTarget(result.mixLoudness.integratedLufs, result.sumLoudness.integratedLufs ?? -70) : 1), [result]);
   useEffect(() => {
     const p = player.current;
-    if (!p || !result) return;
+    if (!p) return;
+    if (!result) { p.setGain("mix", 1); return; }
     const anySolo = Object.values(strips).some((s) => s.solo);
     p.setGain("mix", ab === "mix" ? matchGain : 0);
     for (const [id, s] of Object.entries(strips)) {
@@ -212,6 +244,14 @@ export function App() {
   }, [strips, ab, result, matchGain]);
   const setStrip = (id: string, patch: Partial<Strip>) => setStrips((s) => ({ ...s, [id]: { ...s[id], ...patch } }));
 
+  // ▶ on a stem: hear just that stem (solo it) from the playhead.
+  const audition = (id: string) => {
+    const soloed = Object.entries(strips).filter(([, s]) => s.solo).map(([k]) => k);
+    if (playing && soloed.length === 1 && soloed[0] === id) { player.current?.pause(); setPlaying(false); return; }
+    setStrips((s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, { ...v, solo: k === id, mute: k === id ? false : v.mute }])));
+    setAb("stems");
+    if (!playing) { void player.current?.play(); setPlaying(true); }
+  };
   const togglePlay = () => {
     const p = player.current;
     if (!p) return;
@@ -236,9 +276,20 @@ export function App() {
   const clipWarning = (clipped: string[]) =>
     clipped.length ? `${clipped.join(", ")} went over full scale and ${clipped.length === 1 ? "was" : "were"} clipped in ${FORMATS[format].label}. Choose 32-bit float to keep the overs.` : undefined;
 
+  const channelsOf = (id: string) => (id === "residual" ? result!.residual : result!.stems.find((s) => s.source === id)!.channels);
+  // Drag a stem out to the desktop or a DAW (Chromium browsers support this).
+  const dragOut = (e: React.DragEvent, id: string) => {
+    if (!result || !source) return;
+    const { bytes } = encode(channelsOf(id), 1 + result.stems.findIndex((s) => s.source === id));
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "audio/wav" }));
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("DownloadURL", `audio/wav:${stemFileName(id)}:${url}`);
+    e.dataTransfer.setData("text/plain", stemFileName(id));
+    setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  };
   const downloadStem = (id: string) => {
     if (!result || !source) return;
-    const channels = id === "residual" ? result.residual : result.stems.find((s) => s.source === id)!.channels;
+    const channels = channelsOf(id);
     const { bytes, clippedSamples } = encode(channels, 1 + result.stems.findIndex((s) => s.source === id));
     download(bytes, stemFileName(id), "audio/wav");
     setNotice(clipWarning(clippedSamples ? [stemName(id)] : []));
@@ -297,9 +348,45 @@ export function App() {
   };
 
   const duration = source ? source.audio.channels[0].length / source.audio.sampleRate : 0;
-  const runs = source && model ? totalRuns(model, resampledLength(source.audio.channels[0].length, source.audio.sampleRate, model.sampleRate), { shifts, overlap }) : 0;
+  const partSeconds = selection ? selection.end - selection.start : duration;
+  const runs = source && model ? totalRuns(model, resampledLength(Math.round(Math.min(duration, partSeconds + 4) * source.audio.sampleRate), source.audio.sampleRate, model.sampleRate), { shifts, overlap }) : 0;
   const order = result ? displayOrder(result.stems.map((s) => s.source)) : [];
   const jobEta = job?.stage === "separate" && job.separateStart && job.done > 0 ? ((performance.now() - job.separateStart) / 1000 / job.done) * (job.total - job.done) : NaN;
+  const anySolo = Object.values(strips).some((s) => s.solo);
+  const canSelect = !!source && !result && !job;
+  const shownSelection = result ? result.selection : selection;
+  const select = (s: Selection | null) => setSelection(s && s.end - s.start >= 1 ? s : null);
+
+  const lane = (id: string) => {
+    const st = id === "residual" ? null : result!.stems.find((s) => s.source === id)!;
+    const strip = strips[id];
+    if (!strip) return null;
+    const audible = ab === "stems" && (anySolo ? strip.solo : !strip.mute);
+    const soloPlaying = playing && strip.solo && Object.values(strips).filter((s) => s.solo).length === 1;
+    return (
+      <div className={`lane${id === "residual" ? " rest" : ""}`} key={id} style={{ "--lane": stemColor(id) } as React.CSSProperties}>
+        <div className="lane-head" draggable onDragStart={(e) => dragOut(e, id)} title="Drag to your desktop or DAW (Chrome, Edge)">
+          <button className="play" onClick={() => audition(id)} aria-label={soloPlaying ? `Pause ${stemName(id)}` : `Play ${stemName(id)} on its own`}>{soloPlaying ? "❚❚" : "▶"}</button>
+          <div className="name">
+            <strong>{stemName(id)}</strong>
+            <span className="muted small">{id === "residual"
+              ? (result!.nullDepthDb === null ? "nothing missed" : `${result!.settings.sumToMix ? "was " : ""}${relative(result!.nullDepthDb)}`)
+              : `${lufs(st!.loudness)} · ${dbtp(st!.loudness)}`}</span>
+          </div>
+          <div className="buttons">
+            <button className={strip.mute ? "on mute" : ""} onClick={() => setStrip(id, { mute: !strip.mute })} aria-pressed={strip.mute} title="Mute">M</button>
+            <button className={strip.solo ? "on solo" : ""} onClick={() => setStrip(id, { solo: !strip.solo })} aria-pressed={strip.solo} title="Solo">S</button>
+            <button onClick={() => downloadStem(id)} title={`Download ${stemName(id)}`} aria-label={`Download ${stemName(id)}`}>↓</button>
+          </div>
+          <label className="fader">
+            <input type="range" min={-24} max={6} step={0.5} value={strip.db} onChange={(e) => setStrip(id, { db: +e.target.value })} onDoubleClick={() => setStrip(id, { db: 0 })} aria-label={`${stemName(id)} level`} />
+            <span className="muted small">{strip.db > 0 ? "+" : ""}{strip.db.toFixed(1)} dB</span>
+          </label>
+        </div>
+        <Waveform channels={st ? st.channels : result!.residual} color={stemColor(id)} position={pos} duration={duration} onSeek={seek} selection={shownSelection} dim={!audible} label={`Waveform of ${stemName(id)}`} />
+      </div>
+    );
+  };
 
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f && !job) void open(f); }}>
@@ -339,161 +426,166 @@ export function App() {
       )}
 
       {source && (
-        <section className="panel">
-          <div className="row between wrap">
-            <div>
-              <h2 className="label">Source</h2>
-              <div className="title">{source.origin.kind === "project" ? `${source.origin.songTitle} · ${source.origin.label}` : source.fileName}</div>
-              <div className="muted small">
-                {source.audio.container === "other" ? "Compressed" : source.audio.container.toUpperCase()}
-                {source.audio.bitDepth ? ` · ${source.audio.bitDepth}-bit${source.audio.encoding === "float" ? " float" : ""}` : ""}
-                {` · ${khz(source.audio.sampleRate)} · ${channelsName(source.audio.channels.length)} · ${time(duration)}`}
+        <div className="workspace">
+          <section className="panel timeline">
+            <div className="row between wrap">
+              <div className="source-meta">
+                <div className="title">{source.origin.kind === "project" ? `${source.origin.songTitle} · ${source.origin.label}` : source.fileName}</div>
+                <div className="muted small">
+                  {source.audio.container === "other" ? "Compressed" : source.audio.container.toUpperCase()}
+                  {source.audio.bitDepth ? ` · ${source.audio.bitDepth}-bit${source.audio.encoding === "float" ? " float" : ""}` : ""}
+                  {` · ${khz(source.audio.sampleRate)} · ${channelsName(source.audio.channels.length)} · ${time(duration)} · ${lufs(source.loudness)} · ${dbtp(source.loudness)}`}
+                </div>
+                {source.audio.note && <div className="warn small">{source.audio.note}</div>}
               </div>
-              {source.audio.note && <div className="warn small">{source.audio.note}</div>}
             </div>
-            <div className="readouts">
-              <div><span className="label">Loudness</span><span className="readout">{lufs(source.loudness)}</span></div>
-              <div><span className="label">True peak</span><span className="readout">{dbtp(source.loudness)}</span></div>
-            </div>
-          </div>
-          {!result && <Waveform channels={source.audio.channels} color="#5B6372" position={0} duration={duration} label="Waveform of the source" height={56} />}
-        </section>
-      )}
 
-      {source && !result && (
-        <section className="panel">
-          <h2 className="label">Separation</h2>
-          {models === null ? <p className="muted">Looking for models…</p> : !models.length ? (
-            <div className="banner">
-              <strong>{modelProblem}</strong> Export Demucs with <code>python tools/export_demucs_onnx.py htdemucs public/models</code> (see the README), then reload.
-            </div>
-          ) : (
-            <div className="grid">
-              <label>Model
-                <select value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!!job}>
-                  {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-                {model && <span className="muted small">{model.sources.map(stemName).join(", ")} · {cached[model.id] ? "downloaded" : `${mb(model.files.reduce((n, f) => n + f.bytes, 0))} download, once`}</span>}
-              </label>
-              <label>Quality
-                <select value={shifts} onChange={(e) => setShifts(+e.target.value)} disabled={!!job}>
-                  <option value={0}>Draft · 1 pass</option>
-                  <option value={1}>Standard · 1 shifted pass</option>
-                  <option value={2}>High · 2 passes averaged</option>
-                  <option value={5}>Best · 5 passes averaged (slow)</option>
-                </select>
-                <span className="muted small">More passes smooth out artefacts slightly; time grows with each.</span>
-              </label>
-              <label>Segment overlap
-                <select value={overlap} onChange={(e) => setOverlap(+e.target.value)} disabled={!!job}>
-                  <option value={0.1}>10%</option>
-                  <option value={0.25}>25% (Demucs default)</option>
-                  <option value={0.5}>50%</option>
-                </select>
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={sumToMix} onChange={(e) => setSumToMix(e.target.checked)} disabled={!!job} />
-                <span>Make the stems add up exactly to the mix<br /><span className="muted small">Shares what the model missed among the stems. Nulls perfectly, but adds a little bleed.</span></span>
-              </label>
-            </div>
-          )}
-          {model && !job && (
-            <div className="row between wrap actions">
-              <span className="muted small">{runs} model runs{model.sampleRate !== source.audio.sampleRate ? ` · runs at ${khz(model.sampleRate)}; stems come back at ${khz(source.audio.sampleRate)}` : ""}{duration > 900 ? " · long files need a lot of memory" : ""}</span>
-              <button className="primary" onClick={split}>Split into stems</button>
-            </div>
-          )}
-          {job && (
-            <div className="progress" aria-live="polite">
-              <div className="row between"><span>{STAGES[job.stage]}{job.stage === "separate" ? ` · ${job.done} of ${job.total}` : ""}</span><span className="muted small">{eta(jobEta)}</span></div>
-              <div className="bar"><div style={{ width: `${job.total ? Math.round((job.done / job.total) * 100) : 0}%` }} /></div>
-              <div className="row between"><span className="muted small">{job.backend ? `Running on ${job.backend}` : ""}</span><button className="ghost" onClick={cancel}>Cancel</button></div>
-            </div>
-          )}
-        </section>
-      )}
-
-      {result && source && (
-        <>
-          <section className="panel mixer">
             <div className="row between wrap transport">
               <div className="row">
                 <button className="primary round" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"}>{playing ? "❚❚" : "▶"}</button>
                 <span className="readout">{time(pos)} <span className="muted">/ {time(duration)}</span></span>
               </div>
-              <div className="ab" role="group" aria-label="Compare">
-                <button className={ab === "mix" ? "on a" : ""} onClick={() => setAb("mix")}>A · Mix</button>
-                <button className={ab === "stems" ? "on b" : ""} onClick={() => setAb("stems")}>B · Stems</button>
-              </div>
-            </div>
-            <p className="muted small">
-              A/B is level-matched{source.loudness?.integratedLufs != null && result.sumLoudness.integratedLufs != null ? ` (the mix plays ${Math.abs(20 * Math.log10(matchGain)).toFixed(1)} dB ${matchGain < 1 ? "quieter" : "louder"})` : ""}. Space plays, B switches.
-            </p>
-            {[...order, "residual"].map((id) => {
-              const st = id === "residual" ? null : result.stems.find((s) => s.source === id)!;
-              const strip = strips[id];
-              if (!strip) return null;
-              const anySolo = Object.values(strips).some((s) => s.solo);
-              const audible = ab === "stems" && (anySolo ? strip.solo : !strip.mute);
-              return (
-                <div className={`strip${id === "residual" ? " rest" : ""}`} key={id}>
-                  <div className="strip-head">
-                    <span className="dot" style={{ background: stemColor(id) }} />
-                    <div className="name">
-                      <strong>{stemName(id)}</strong>
-                      <span className="muted small">{id === "residual" ? (result.nullDepthDb === null ? "nothing missed" : `${result.settings.sumToMix ? "was " : ""}${relative(result.nullDepthDb)}`) : `${lufs(st!.loudness)} · ${dbtp(st!.loudness)}`}</span>
-                    </div>
-                    <div className="buttons">
-                      <button className={strip.mute ? "on mute" : ""} onClick={() => setStrip(id, { mute: !strip.mute })} aria-pressed={strip.mute} title="Mute">M</button>
-                      <button className={strip.solo ? "on solo" : ""} onClick={() => setStrip(id, { solo: !strip.solo })} aria-pressed={strip.solo} title="Solo">S</button>
-                      <button onClick={() => downloadStem(id)} title={`Download ${stemName(id)}`} aria-label={`Download ${stemName(id)}`}>↓</button>
-                    </div>
-                  </div>
-                  <Waveform channels={st ? st.channels : result.residual} color={stemColor(id)} position={pos} duration={duration} onSeek={seek} dim={!audible} label={`Waveform of ${stemName(id)}`} />
-                  <label className="fader">
-                    <span className="muted small">{strip.db > 0 ? "+" : ""}{strip.db.toFixed(1)} dB</span>
-                    <input type="range" min={-24} max={6} step={0.5} value={strip.db} onChange={(e) => setStrip(id, { db: +e.target.value })} onDoubleClick={() => setStrip(id, { db: 0 })} aria-label={`${stemName(id)} level`} />
-                  </label>
+              {result && (
+                <div className="ab" role="group" aria-label="Compare">
+                  <button className={ab === "mix" ? "on a" : ""} onClick={() => setAb("mix")}>A · Mix</button>
+                  <button className={ab === "stems" ? "on b" : ""} onClick={() => setAb("stems")}>B · Stems</button>
                 </div>
-              );
-            })}
-            <p className="muted small">
-              Remainder is what the stems leave out (the mix minus all stems). Faders and mutes are for listening only; exports are the stems as separated.
-            </p>
-          </section>
-
-          <section className="panel">
-            <h2 className="label">Export</h2>
-            <div className="grid">
-              <label>Format
-                <select value={format} onChange={(e) => setFormat(e.target.value as FormatChoice)}>
-                  {Object.entries(FORMATS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-                </select>
-                <span className="muted small">{khz(source.audio.sampleRate)}, {channelsName(source.audio.channels.length)}, same length as the source, so stems line up at zero in any DAW.</span>
-              </label>
-              {source.origin.kind === "project" ? (
-                <label>Saving as
-                  <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
-                    {source.origin.project.members.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.role})</option>)}
-                  </select>
-                </label>
-              ) : (
-                <label>Your name (for the project)
-                  <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Me" maxLength={80} />
-                </label>
               )}
             </div>
-            <div className="row wrap actions">
-              <button className="primary" onClick={downloadAll} disabled={busy}>Download all stems (.zip)</button>
-              <button onClick={saveProject} disabled={busy}>{source.origin.kind === "project" ? "Save as new Stems version (.soundlab)" : "Save as SoundLab project (.soundlab)"}</button>
-              <button className="ghost" onClick={() => { player.current?.stop(); setPlaying(false); setResult(null); setPos(0); }} disabled={busy}>Split again with other settings</button>
+
+            <div className="lanes">
+              <Ruler duration={duration} position={pos} onSeek={seek} />
+              <div className={`lane mix${result && ab === "mix" ? " active" : ""}`} style={{ "--lane": "#8B93A1" } as React.CSSProperties}>
+                <div className="lane-head">
+                  <span className="badge">A</span>
+                  <div className="name">
+                    <strong>Mix</strong>
+                    <span className="muted small">{canSelect ? "Drag across to split just a part" : result?.selection ? `Split ${time(result.selection.start)}–${time(result.selection.end)}` : "The original"}</span>
+                  </div>
+                </div>
+                <Waveform channels={source.audio.channels} color="#8B93A1" position={pos} duration={duration} onSeek={seek}
+                  onSelect={canSelect ? select : undefined} selection={shownSelection} dim={!!result && ab === "stems"} label="Waveform of the mix" />
+              </div>
+              {result && order.map(lane)}
+              {result && lane("residual")}
             </div>
-            <p className="muted small">
-              {result.model.name} · {result.settings.shifts === 0 ? "1 pass" : `${result.settings.shifts} shifted pass${result.settings.shifts > 1 ? "es" : ""}`} · {Math.round(result.settings.overlap * 100)}% overlap · {result.backend} · took {time(result.seconds)}.
-              {" "}The settings are saved with the version so it can be redone.
-            </p>
+            {result ? (
+              <p className="muted small">
+                ▶ plays one stem on its own. A/B is level-matched{result.mixLoudness.integratedLufs != null && result.sumLoudness.integratedLufs != null ? ` (the mix plays ${Math.abs(20 * Math.log10(matchGain)).toFixed(1)} dB ${matchGain < 1 ? "quieter" : "louder"})` : ""}. Space plays, B switches.
+                {" "}Remainder is what the stems leave out{result.selection ? " in the split part" : ""}. Faders are for listening; exports are the stems as separated.
+              </p>
+            ) : (
+              <p className="muted small">Space plays. Drag across the mix to split only that part, for a quick check before the whole song.</p>
+            )}
           </section>
-        </>
+
+          <aside className="side">
+            {!result && (
+              <section className="panel">
+                <h2 className="label">Stem separator</h2>
+                {models === null ? <p className="muted">Looking for models…</p> : !models.length ? (
+                  <div className="banner">
+                    <strong>{modelProblem}</strong> Export Demucs with <code>python tools/export_demucs_onnx.py htdemucs public/models</code> (see the README), then reload.
+                  </div>
+                ) : (
+                  <>
+                    <div className="counts" role="radiogroup" aria-label="Stems">
+                      {COUNTS.map((c) => {
+                        const available = modelsFor(models, c.n).length > 0;
+                        return (
+                          <button key={c.n} role="radio" aria-checked={count === c.n} className={count === c.n ? "on" : ""} disabled={!!job || !available}
+                            onClick={() => chooseCount(c.n)} title={available ? c.detail : "No model for this is installed"}>
+                            <strong>{c.label}</strong><span className="small">{available ? c.detail : "not installed"}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {candidates.length > 1 && (
+                      <label className="field">Model
+                        <select value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!!job}>
+                          {candidates.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    {model && <p className="muted small">{model.name} · {cached[model.id] ? "downloaded" : `${mb(model.files.reduce((n, f) => n + f.bytes, 0))} download, once`}</p>}
+                    <label className="field">Quality
+                      <select value={shifts} onChange={(e) => setShifts(+e.target.value)} disabled={!!job}>
+                        <option value={0}>Draft · 1 pass</option>
+                        <option value={1}>Standard · 1 shifted pass</option>
+                        <option value={2}>High · 2 passes averaged</option>
+                        <option value={5}>Best · 5 passes averaged (slow)</option>
+                      </select>
+                    </label>
+                    <details className="more">
+                      <summary>More settings</summary>
+                      <label className="field">Segment overlap
+                        <select value={overlap} onChange={(e) => setOverlap(+e.target.value)} disabled={!!job}>
+                          <option value={0.1}>10%</option>
+                          <option value={0.25}>25% (Demucs default)</option>
+                          <option value={0.5}>50%</option>
+                        </select>
+                      </label>
+                      <label className="check">
+                        <input type="checkbox" checked={sumToMix} onChange={(e) => setSumToMix(e.target.checked)} disabled={!!job} />
+                        <span>Make the stems add up exactly to the mix<br /><span className="muted small">Shares what the model missed among the stems. Nulls perfectly, but adds a little bleed.</span></span>
+                      </label>
+                    </details>
+                    <div className="selection-info">
+                      {selection ? (
+                        <><span>Selection <strong>{time(selection.start)}–{time(selection.end)}</strong> <span className="muted">({time(selection.end - selection.start)})</span></span>
+                          <button className="ghost small-btn" onClick={() => setSelection(null)} disabled={!!job}>Whole song</button></>
+                      ) : <span className="muted small">Whole song · drag across the mix to split a part</span>}
+                    </div>
+                  </>
+                )}
+                {model && !job && (
+                  <>
+                    <button className="primary wide" onClick={split}>{selection ? "Split selection" : "Split whole song"}</button>
+                    <span className="muted small">{runs} model runs{model.sampleRate !== source.audio.sampleRate ? ` · runs at ${khz(model.sampleRate)}; stems come back at ${khz(source.audio.sampleRate)}` : ""}{duration > 900 && !selection ? " · long files need a lot of memory" : ""}</span>
+                  </>
+                )}
+                {job && (
+                  <div className="progress" aria-live="polite">
+                    <div className="row between"><span>{STAGES[job.stage]}{job.stage === "separate" ? ` · ${job.done} of ${job.total}` : ""}</span></div>
+                    <div className="bar"><div style={{ width: `${job.total ? Math.round((job.done / job.total) * 100) : 0}%` }} /></div>
+                    <div className="row between"><span className="muted small">{job.backend ? `Running on ${job.backend}` : ""} {eta(jobEta)}</span><button className="ghost" onClick={cancel}>Cancel</button></div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {result && (
+              <section className="panel">
+                <h2 className="label">Export</h2>
+                <label className="field">Format
+                  <select value={format} onChange={(e) => setFormat(e.target.value as FormatChoice)}>
+                    {Object.entries(FORMATS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  <span className="muted small">{khz(source.audio.sampleRate)}, {channelsName(source.audio.channels.length)}, full song length, so stems line up at zero in any DAW.</span>
+                </label>
+                {source.origin.kind === "project" ? (
+                  <label className="field">Saving as
+                    <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+                      {source.origin.project.members.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.role})</option>)}
+                    </select>
+                  </label>
+                ) : (
+                  <label className="field">Your name (for the project)
+                    <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Me" maxLength={80} />
+                  </label>
+                )}
+                <button className="primary wide" onClick={downloadAll} disabled={busy}>Download all stems (.zip)</button>
+                <button className="wide" onClick={saveProject} disabled={busy}>{source.origin.kind === "project" ? "Save as new Stems version (.soundlab)" : "Save as SoundLab project (.soundlab)"}</button>
+                <p className="muted small drag-tip">Or drag a stem's name straight to your desktop or DAW (Chrome and Edge).</p>
+                <button className="ghost wide" onClick={() => { player.current?.stop(); setPlaying(false); setResult(null); setPos(0); player.current?.setGain("mix", 1); }} disabled={busy}>Clear stems and split again</button>
+                <p className="muted small">
+                  {result.model.name} · {result.settings.shifts === 0 ? "1 pass" : `${result.settings.shifts} shifted pass${result.settings.shifts > 1 ? "es" : ""}`} · {Math.round(result.settings.overlap * 100)}% overlap · {result.backend} · took {time(result.seconds)}.
+                  {" "}The settings are saved with the version so it can be redone.
+                </p>
+              </section>
+            )}
+          </aside>
+        </div>
       )}
 
       <footer className="notes">
@@ -503,7 +595,8 @@ export function App() {
             <li>It estimates each instrument with an AI model (Demucs v4). Results are estimates: expect some bleed between stems, especially reverb, backing vocals and instruments the model was not trained on.</li>
             <li>Everything runs on this device. Your audio is never uploaded.</li>
             <li>Stems keep the source's sample rate and length. The model works at {khz(model?.sampleRate ?? 44100)}; other rates are converted in and out with a high-quality resampler, and the app says so.</li>
-            <li>The Remainder strip and its level show honestly how much the stems miss. Saving to a project never changes an existing version: the stems become a new version.</li>
+            <li>Splitting a selection separates that part (with 2 seconds of context either side) and leaves the stems silent elsewhere, so they still line up with the song.</li>
+            <li>The Remainder lane and its level show honestly how much the stems miss. Saving to a project never changes an existing version: the stems become a new version.</li>
           </ul>
         </details>
       </footer>

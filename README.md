@@ -15,10 +15,13 @@ Split a mix into **vocals, drums, bass and other** (or six stems, adding guitar 
 
 ## How it works
 
+The layout is a shared timeline: the mix on top, each stem in its own coloured lane below with ▶ (hear it on its own), mute, solo, level and download, and the separator settings beside it.
+
 1. **Open** a WAV, AIFF, FLAC, MP3, M4A or Ogg file, or a `.soundlab` project (then pick a version). WAV and AIFF are decoded by the app at their own rate and bit depth; compressed files are decoded by the browser at the rate read from their header (the app says if it could not).
-2. **Separate** in a Web Worker (`src/engine/worker.ts`). The model runs at 44.1 kHz; other rates are converted in and back out with a high-quality resampler (about 100 dB stopband), and the app shows that it did.
-3. **Listen**: every stem plus the **Remainder** (mix minus all stems) play in sync with mute, solo, level and a level-matched **A/B** against the mix. The Remainder's level is an honest measure of what the stems miss.
-4. **Export** each stem or all of them as WAV (16-bit dithered, 24-bit or 32-bit float), at the source's rate and exact length so they line up at zero in any DAW. Or **save to a `.soundlab` project**: the stems become a new `Stems` version with `source.basedOn` set to the version they came from, and every setting in `source.settings` so the result can be redone. Nothing already in the project is changed.
+2. **Choose** 2 stems (vocals + instrumental), 4 or 6, and optionally **drag across the mix to split only a part** (a chorus, for a quick check). A part is separated with 2 s of real context either side and put back in place, silent elsewhere, so it still lines up with the song.
+3. **Separate** in a Web Worker (`src/engine/worker.ts`). The model runs at 44.1 kHz; other rates are converted in and back out with a high-quality resampler (about 100 dB stopband), and the app shows that it did.
+4. **Listen**: every stem plus the **Remainder** (mix minus all stems) play in sync with mute, solo, level and a level-matched **A/B** against the mix. The Remainder's level is an honest measure of what the stems miss.
+5. **Export** each stem or all of them as WAV (16-bit dithered, 24-bit or 32-bit float), at the source's rate and exact length so they line up at zero in any DAW. Drag a stem's name straight to the desktop or a DAW in Chrome and Edge. Or **save to a `.soundlab` project**: the stems become a new `Stems` version with `source.basedOn` set to the version they came from, and every setting in `source.settings` so the result can be redone. Nothing already in the project is changed.
 
 ### The engine
 
@@ -71,6 +74,7 @@ For multi-core speed the page must be cross-origin isolated. Hosts that can send
 - Opening WAV (PCM 8–32-bit, float 32/64), AIFF/AIFF-C, and browser-decodable formats at their native rate; `.soundlab` projects, validated with `problems()` and checksums
 - Demucs v4 separation in the browser (WebGPU or multi-threaded WebAssembly), with progress, time left and cancel
 - 4- and 6-stem models and bags of models (`htdemucs_ft`)
+- 2 (vocals + instrumental), 4 or 6 stems; splitting just a selection
 - Quality settings (passes, overlap) and an optional "make the stems add up to the mix"
 - Remainder strip with its level; LUFS and true peak for every stem (`measureLoudness`)
 - Synced playback with mute, solo, level, seek and level-matched A/B
@@ -79,7 +83,7 @@ For multi-core speed the page must be cross-origin isolated. Hosts that can send
 
 ## Not yet
 
-- Only `htdemucs` is published by the workflow; add `htdemucs_6s` / `htdemucs_ft` the same way when wanted
+- The workflow publishes `htdemucs` (2 and 4 stems) and `htdemucs_6s` (6 stems); add `htdemucs_ft` the same way when wanted
 - Phones: the model needs roughly 1 GB of memory while running; older phones may reload the page instead of finishing
 - Licence review of the Demucs weights before selling
 - Tested in a real browser only with random-weight test models (headless Chromium, CPU); the real weights could not be downloaded in the build environment. Check separation quality and WebGPU speed with the real models on real devices.

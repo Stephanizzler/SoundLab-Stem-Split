@@ -1,6 +1,7 @@
 // Messages between the page and the separation worker.
 import type { Loudness } from "@soundlab/project";
 import type { ModelManifest } from "../core/manifest.ts";
+import type { Layout, Range } from "../core/arrange.ts";
 
 export type SeparateRequest = {
   type: "separate";
@@ -11,6 +12,8 @@ export type SeparateRequest = {
   shifts: number;
   overlap: number;
   sumToMix: boolean;
+  layout: Layout;
+  range?: Range; // samples at the file's rate; omitted for the whole song
 };
 export type ToWorker = SeparateRequest | { type: "cancel" };
 
@@ -18,5 +21,5 @@ export type Stage = "download" | "prepare" | "convert-in" | "separate" | "conver
 export type StemResult = { source: string; channels: Float32Array[]; loudness: Loudness; peak: number };
 export type FromWorker =
   | { type: "progress"; stage: Stage; done: number; total: number; backend?: string }
-  | { type: "done"; stems: StemResult[]; residual: Float32Array[]; residualLoudness: Loudness; sumLoudness: Loudness; nullDepthDb: number | null; shiftOffsets: number[]; backend: string; seconds: number }
+  | { type: "done"; stems: StemResult[]; residual: Float32Array[]; residualLoudness: Loudness; sumLoudness: Loudness; mixLoudness: Loudness; nullDepthDb: number | null; shiftOffsets: number[]; backend: string; seconds: number }
   | { type: "error"; message: string; cancelled: boolean };

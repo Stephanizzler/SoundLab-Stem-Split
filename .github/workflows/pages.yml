@@ -1,4 +1,4 @@
-# Builds the app, exports the real Demucs v4 model, checks the export against
+# Builds the app, exports the real Demucs v4 models (4 and 6 stems), checks the export against
 # Demucs, and publishes everything to GitHub Pages.
 # One-time setup: Settings → Pages → Build and deployment → Source: GitHub Actions.
 name: Deploy to GitHub Pages
@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models-out
-          key: models-htdemucs-${{ hashFiles('tools/export_demucs_onnx.py', 'tools/check_export.py') }}
+          key: models-htdemucs-6s-${{ hashFiles('tools/export_demucs_onnx.py', 'tools/check_export.py') }}
       - if: steps.models.outputs.cache-hit != 'true'
         uses: actions/setup-python@v5
         with:
@@ -50,8 +50,10 @@ jobs:
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
           pip install demucs onnx onnxscript onnxruntime numpy
-          python tools/export_demucs_onnx.py htdemucs models-out --part-mb 90
-          python tools/check_export.py htdemucs models-out
+          for m in htdemucs htdemucs_6s; do
+            python tools/export_demucs_onnx.py $m models-out --part-mb 90
+            python tools/check_export.py $m models-out
+          done
       - run: mkdir -p dist/models && cp -r models-out/. dist/models/ && ls -la dist/models
 
       - uses: actions/upload-pages-artifact@v3

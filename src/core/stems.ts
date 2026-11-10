@@ -2,11 +2,11 @@
 // layout, measure what they leave out, and optionally put that remainder back.
 
 export const STEM_NAMES: Record<string, string> = {
-  vocals: "Vocals", drums: "Drums", bass: "Bass", other: "Other", guitar: "Guitar", piano: "Piano", residual: "Remainder",
+  vocals: "Vocals", drums: "Drums", bass: "Bass", other: "Other", guitar: "Guitar", piano: "Piano", instrumental: "Instrumental", residual: "Remainder",
 };
 export const stemName = (id: string) => STEM_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 // Order a producer expects to see them in.
-const ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
+const ORDER = ["vocals", "instrumental", "drums", "bass", "guitar", "piano", "other"];
 export const displayOrder = (ids: string[]) => [...ids].sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99));
 
 // Stereo for the model: mono is played from both sides; more than two channels is refused.

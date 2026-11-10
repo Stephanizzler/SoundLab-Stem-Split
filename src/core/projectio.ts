@@ -21,8 +21,11 @@ export type StemSettings = {
   fileRate: number; // the rate of the source file and of the stems
   output: { bitDepth: number; encoding: "pcm" | "float" };
   nullDepthDb: number | null; // remainder below the mix before any sum-to-mix step; null for digital silence
+  layout?: "all" | "vocals-instrumental"; // omitted = "all"
+  range?: { startSeconds: number; endSeconds: number }; // only this part was split; silence elsewhere
 };
 
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 // "42.3 dB below the mix" / "0.1 dB above the mix".
 export const relative = (db: number) => `${Math.abs(db).toFixed(1)} dB ${db <= 0 ? "below" : "above"} the mix`;
 
@@ -58,6 +61,7 @@ export function saveStems(p: Project, c: Clock, o: { basedOn: string; createdBy:
   const db = o.settings.nullDepthDb;
   const description = o.description ?? [
     `${o.stems.length} stems (${o.stems.map((s) => s.source).join(", ")}) split from ${found.version.label} with ${o.settings.model.name} in SoundLab Stem Split.`,
+    o.settings.range ? `Only ${clock(o.settings.range.startSeconds)}–${clock(o.settings.range.endSeconds)} was split; the stems are silent elsewhere and line up with the full song.` : "",
     "AI estimates: some bleed between stems is normal.",
     db === null ? "" : o.settings.sumToMix ? `What the stems missed (${relative(db)}) was shared out so they add up to the mix.` : `What the stems miss (the mix minus all stems) is ${relative(db)}.`,
   ].filter(Boolean).join(" ");
