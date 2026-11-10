@@ -1,0 +1,4 @@
+# Netlify / Cloudflare Pages: cross-origin isolation lets the separator use every CPU core.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
