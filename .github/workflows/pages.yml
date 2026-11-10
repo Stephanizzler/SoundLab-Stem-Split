@@ -69,3 +69,6 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # The models make this a large site; GitHub can take over 10 minutes to copy it.
+          timeout: 1800000
