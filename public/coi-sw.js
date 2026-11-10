@@ -8,9 +8,9 @@ self.addEventListener("fetch", (e) => {
   if (r.cache === "only-if-cached" && r.mode !== "same-origin") return;
   // Always check for a new page (a quick revalidation), so an update shows on the next visit.
   // Other files have hashed names or are checksum-checked, so they can come from the browser cache.
-  const req = r.mode === "navigate" ? new Request(r, { cache: "no-cache" }) : r;
+  const response = r.mode === "navigate" ? fetch(r.url, { cache: "no-cache", credentials: "same-origin" }) : fetch(r);
   e.respondWith(
-    fetch(req).then((res) => {
+    response.then((res) => {
       if (res.status === 0) return res; // opaque: leave as is
       const headers = new Headers(res.headers);
       headers.set("Cross-Origin-Embedder-Policy", "require-corp");
