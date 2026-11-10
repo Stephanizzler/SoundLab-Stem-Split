@@ -6,8 +6,11 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", (e) => {
   const r = e.request;
   if (r.cache === "only-if-cached" && r.mode !== "same-origin") return;
+  // Always check for a new page (a quick revalidation), so an update shows on the next visit.
+  // Other files have hashed names or are checksum-checked, so they can come from the browser cache.
+  const req = r.mode === "navigate" ? new Request(r, { cache: "no-cache" }) : r;
   e.respondWith(
-    fetch(r).then((res) => {
+    fetch(req).then((res) => {
       if (res.status === 0) return res; // opaque: leave as is
       const headers = new Headers(res.headers);
       headers.set("Cross-Origin-Embedder-Policy", "require-corp");
