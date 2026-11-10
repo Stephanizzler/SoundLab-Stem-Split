@@ -29,6 +29,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # SoundLab-Core is public; fetch it over HTTPS (the lockfile records an SSH address).
+      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm build
