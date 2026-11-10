@@ -69,3 +69,10 @@ test("the stems ZIP opens with standard tools", async () => {
   assert.match(listing, /'a\/Vocals.wav', 3\).*'Drums.wav', 0/);
   assert.equal(safeFileName('Mix: "final"/v2'), "Mix- -final-v2");
 });
+
+test("model files served in parts must add up", () => {
+  const base = { id: "htdemucs", name: "x", family: "htdemucs", licence: "MIT", sampleRate: 44100, channels: 2, segmentSamples: 343980, nfft: 4096, hop: 1024, sources: ["drums"], weights: [[1]] };
+  const file = { url: "a.onnx", bytes: 10, sha256: "x" };
+  assert.deepEqual(manifestProblems({ ...base, files: [{ ...file, parts: [{ url: "a.onnx.part0", bytes: 6 }, { url: "a.onnx.part1", bytes: 4 }] }] }), []);
+  assert.match(manifestProblems({ ...base, files: [{ ...file, parts: [{ url: "a.onnx.part0", bytes: 6 }] }] }).join(), /add up/);
+});

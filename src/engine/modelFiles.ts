@@ -18,15 +18,17 @@ export async function fetchModelFile(f: ModelFile, base: string, onBytes: (n: nu
     if ((await hex(buf)) === f.sha256) { onBytes(buf.byteLength); return new Uint8Array(buf); }
     await cache?.delete(url); // stale or damaged: fetch again
   }
-  const res = await fetch(url, { signal });
-  if (!res.ok || !res.body) throw new Error(`Could not download the model (${res.status} ${res.statusText}).`);
   const parts: Uint8Array[] = [];
   let got = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value); got += value.length; onBytes(got);
+  for (const part of f.parts ?? [{ url: f.url, bytes: f.bytes }]) {
+    const res = await fetch(new URL(part.url, base).href, { signal });
+    if (!res.ok || !res.body) throw new Error(`Could not download the model (${res.status} ${res.statusText}).`);
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value); got += value.length; onBytes(got);
+    }
   }
   const out = new Uint8Array(got);
   let at = 0;

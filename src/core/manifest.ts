@@ -1,6 +1,7 @@
 // The description of a separation model that the app downloads, written by
 // tools/export_demucs_onnx.py next to the .onnx files.
-export type ModelFile = { url: string; bytes: number; sha256: string };
+// A large file may be served in parts (some hosts limit file size); sha256 is of the whole file.
+export type ModelFile = { url: string; bytes: number; sha256: string; parts?: { url: string; bytes: number }[] };
 export type ModelManifest = {
   id: string;
   name: string;
@@ -28,6 +29,8 @@ export function manifestProblems(x: unknown): string[] {
   if (!Array.isArray(m.sources) || !m.sources.length || m.sources.some((s) => typeof s !== "string" || !/^[a-z0-9_]{1,32}$/.test(s))) out.push("Model sources are not valid.");
   if (!Array.isArray(m.files) || !m.files.length || m.files.some((f) => typeof f?.url !== "string" || !isNum(f.bytes) || typeof f.sha256 !== "string"))
     out.push("Model files are not listed correctly.");
+  else if (m.files.some((f) => f.parts !== undefined && (!Array.isArray(f.parts) || !f.parts.length || f.parts.some((p) => typeof p?.url !== "string" || !isNum(p.bytes)) || f.parts.reduce((n, p) => n + p.bytes, 0) !== f.bytes)))
+    out.push("Model file parts do not add up.");
   if (!Array.isArray(m.weights) || m.weights.length !== m.files?.length || m.weights.some((w) => !Array.isArray(w) || w.length !== m.sources?.length || w.some((v) => !isNum(v) || v < 0)))
     out.push("Model weights are not valid.");
   else if (m.sources.some((_, s) => m.weights.every((w) => w[s] === 0))) out.push("Every source needs a model that produces it.");

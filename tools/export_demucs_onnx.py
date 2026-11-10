@@ -85,7 +85,21 @@ def sha256(path):
     return h.hexdigest()
 
 
-def write_bundle(bag_models, weights, model_id, name, out_dir, licence):
+def split_file(path, part_bytes):
+    """Cuts a file into numbered parts (some static hosts limit file size) and
+    returns their names and sizes; the app joins them and checks the whole file's SHA-256."""
+    parts = []
+    with open(path, "rb") as f:
+        for n, block in enumerate(iter(lambda: f.read(part_bytes), b"")):
+            name = f"{os.path.basename(path)}.part{n}"
+            with open(os.path.join(os.path.dirname(path), name), "wb") as out:
+                out.write(block)
+            parts.append({"url": name, "bytes": len(block)})
+    os.remove(path)
+    return parts
+
+
+def write_bundle(bag_models, weights, model_id, name, out_dir, licence, part_mb=0):
     """Exports every model of a bag and writes the manifest the app reads."""
     os.makedirs(out_dir, exist_ok=True)
     first = bag_models[0]
@@ -93,7 +107,11 @@ def write_bundle(bag_models, weights, model_id, name, out_dir, licence):
     for i, m in enumerate(bag_models):
         file = f"{model_id}.{i}.onnx" if len(bag_models) > 1 else f"{model_id}.onnx"
         export_one(m, os.path.join(out_dir, file))
-        files.append({"url": file, "bytes": os.path.getsize(os.path.join(out_dir, file)), "sha256": sha256(os.path.join(out_dir, file))})
+        path = os.path.join(out_dir, file)
+        entry = {"url": file, "bytes": os.path.getsize(path), "sha256": sha256(path)}
+        if part_mb and entry["bytes"] > part_mb * 1_000_000:
+            entry["parts"] = split_file(path, part_mb * 1_000_000)
+        files.append(entry)
     manifest = {
         "id": model_id,
         "name": name,
@@ -127,12 +145,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("model", choices=sorted(NAMES))
     p.add_argument("out_dir")
+    p.add_argument("--part-mb", type=int, default=0, help="split files larger than this into parts (0 = never)")
     a = p.parse_args()
     model = get_model(a.model)
     models = list(model.models) if isinstance(model, BagOfModels) else [model]
     weights = [list(map(float, w)) for w in model.weights] if isinstance(model, BagOfModels) else [[1.0] * len(model.sources)]
     m = write_bundle(models, weights, a.model, NAMES[a.model], a.out_dir,
-                     "Code: MIT (facebookresearch/demucs). Weights: see README, Model licences.")
+                     "Code: MIT (facebookresearch/demucs). Weights: see README, Model licences.", a.part_mb)
     print(json.dumps(m, indent=1))
 
 

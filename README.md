@@ -60,7 +60,11 @@ pnpm build          # static site in dist/
 
 ### Hosting
 
-It is a static site. For multi-core speed the host must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (`public/_headers` does this on Netlify and Cloudflare Pages). Without them, for example on GitHub Pages, it still works but uses one CPU thread.
+It is a static site, published to **GitHub Pages** by `.github/workflows/pages.yml` on every push to `main`: it runs the tests, builds the app, exports the real `htdemucs` model, checks the export against Demucs (`tools/check_export.py`), and deploys. The exported model is cached between runs. One-time setup: *Settings → Pages → Build and deployment → Source: GitHub Actions*.
+
+Test link: https://stephanizzler.github.io/SoundLab-Stem-Split/
+
+For multi-core speed the page must be cross-origin isolated. Hosts that can send headers use `public/_headers` (Netlify, Cloudflare Pages); on GitHub Pages a small service worker (`public/coi-sw.js`) adds them and the page reloads once on the first visit. Model files over 90 MB are served in parts and joined (and checksum-checked) in the browser.
 
 ## What works
 
@@ -75,7 +79,8 @@ It is a static site. For multi-core speed the host must send `Cross-Origin-Opene
 
 ## Not yet
 
-- Models are not hosted anywhere yet: export them and host them (see *Models*)
+- Only `htdemucs` is published by the workflow; add `htdemucs_6s` / `htdemucs_ft` the same way when wanted
+- Phones: the model needs roughly 1 GB of memory while running; older phones may reload the page instead of finishing
 - Licence review of the Demucs weights before selling
 - Tested in a real browser only with random-weight test models (headless Chromium, CPU); the real weights could not be downloaded in the build environment. Check separation quality and WebGPU speed with the real models on real devices.
 - Long files hold every stem in memory; songs over about 15 minutes may run out of memory on phones

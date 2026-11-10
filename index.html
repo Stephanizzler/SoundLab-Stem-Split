@@ -8,6 +8,17 @@
     <meta name="description" content="Split a mix into vocals, drums, bass and other stems, privately in your browser." />
   </head>
   <body>
+    <script>
+      // On hosts without cross-origin isolation headers, a service worker adds them
+      // (public/coi-sw.js), then the page reloads once so it takes effect.
+      if (!window.crossOriginIsolated && window.isSecureContext && "serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./coi-sw.js").then((reg) => {
+          const reloadOnce = () => { if (!sessionStorage.getItem("coi-reloaded")) { sessionStorage.setItem("coi-reloaded", "1"); location.reload(); } };
+          if (reg.active && !navigator.serviceWorker.controller) reloadOnce();
+          navigator.serviceWorker.addEventListener("controllerchange", reloadOnce);
+        }).catch(() => { /* still works, on one CPU thread */ });
+      }
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
