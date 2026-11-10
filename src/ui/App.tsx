@@ -41,9 +41,11 @@ type Strip = { mute: boolean; solo: boolean; db: number };
 type FormatChoice = "16" | "24" | "32f";
 
 const STEM_COLORS: Record<string, string> = {
-  vocals: "#C792EA", instrumental: "#82AAFF", drums: "#FF9E64", bass: "#7DCFFF", guitar: "#9ECE6A", piano: "#E0AF68", other: "#A9B1D6", residual: "#8B93A1",
+  // Bright, clearly different colours per instrument, as on a DAW's clips.
+  vocals: "#5B9BF5", instrumental: "#5FC7EE", drums: "#EF5A5F", bass: "#F2B63D", guitar: "#2FB5A8", piano: "#A879F2", other: "#4CC572", residual: "#8B93A1",
 };
 const stemColor = (id: string) => STEM_COLORS[id] ?? "#A9B1D6";
+const MIX_COLOR = "#7DB8F0";
 const STAGES: Record<Stage, string> = {
   download: "Downloading the model (once; it is kept for next time)",
   prepare: "Starting the model",
@@ -383,7 +385,10 @@ export function App() {
             <span className="muted small">{strip.db > 0 ? "+" : ""}{strip.db.toFixed(1)} dB</span>
           </label>
         </div>
-        <Waveform channels={st ? st.channels : result!.residual} color={stemColor(id)} position={pos} duration={duration} onSeek={seek} selection={shownSelection} dim={!audible} label={`Waveform of ${stemName(id)}`} />
+        <div className={`clip${audible ? "" : " off"}`}>
+          <span className="clip-name">{stemName(id)}{id === "residual" ? " (what the stems miss)" : ""} · {source!.title}</span>
+          <Waveform channels={st ? st.channels : result!.residual} color={stemColor(id)} position={pos} duration={duration} onSeek={seek} selection={shownSelection} dim={!audible} height={76} label={`Waveform of ${stemName(id)}`} />
+        </div>
       </div>
     );
   };
@@ -455,7 +460,7 @@ export function App() {
 
             <div className="lanes">
               <Ruler duration={duration} position={pos} onSeek={seek} />
-              <div className={`lane mix${result && ab === "mix" ? " active" : ""}`} style={{ "--lane": "#8B93A1" } as React.CSSProperties}>
+              <div className={`lane mix${result && ab === "mix" ? " active" : ""}`} style={{ "--lane": MIX_COLOR } as React.CSSProperties}>
                 <div className="lane-head">
                   <span className="badge">A</span>
                   <div className="name">
@@ -463,8 +468,11 @@ export function App() {
                     <span className="muted small">{canSelect ? "Drag across to split just a part" : result?.selection ? `Split ${time(result.selection.start)}–${time(result.selection.end)}` : "The original"}</span>
                   </div>
                 </div>
-                <Waveform channels={source.audio.channels} color="#8B93A1" position={pos} duration={duration} onSeek={seek}
-                  onSelect={canSelect ? select : undefined} selection={shownSelection} dim={!!result && ab === "stems"} label="Waveform of the mix" />
+                <div className={`clip${result && ab === "stems" ? " off" : ""}`}>
+                  <span className="clip-name">{source.title} · Mix</span>
+                  <Waveform channels={source.audio.channels} color={MIX_COLOR} position={pos} duration={duration} onSeek={seek}
+                    onSelect={canSelect ? select : undefined} selection={shownSelection} dim={!!result && ab === "stems"} height={result ? 76 : 120} label="Waveform of the mix" />
+                </div>
               </div>
               {result && order.map(lane)}
               {result && lane("residual")}
@@ -560,6 +568,23 @@ export function App() {
 
             {result && source && (
               <section className="panel">
+                <h2 className="label">Stems</h2>
+                <div className="stem-cards">
+                  {order.map((id) => {
+                    const st = result.stems.find((x) => x.source === id)!;
+                    const soloPlaying = playing && strips[id]?.solo && Object.values(strips).filter((x) => x.solo).length === 1;
+                    return (
+                      <div className="stem-card" key={id} style={{ "--lane": stemColor(id) } as React.CSSProperties} draggable onDragStart={(e) => dragOut(e, id)}>
+                        <div className="stem-card-head">
+                          <button className="play" onClick={() => audition(id)} aria-label={soloPlaying ? `Pause ${stemName(id)}` : `Play ${stemName(id)} on its own`}>{soloPlaying ? "❚❚" : "▶"}</button>
+                          <strong>{stemName(id)}</strong>
+                          <span className="small">{lufs(st.loudness)}</span>
+                        </div>
+                        <Waveform channels={st.channels} color={stemColor(id)} position={pos} duration={duration} onSeek={seek} height={36} label={`Overview of ${stemName(id)}`} />
+                      </div>
+                    );
+                  })}
+                </div>
                 <h2 className="label">Export</h2>
                 <label className="field">Format
                   <select value={format} onChange={(e) => setFormat(e.target.value as FormatChoice)}>
